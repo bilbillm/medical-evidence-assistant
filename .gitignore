@@ -1,6 +1,7 @@
 logs/
 tmp/
 output/
+node_modules/
 
 *.zip
 *.raw-sse.txt
