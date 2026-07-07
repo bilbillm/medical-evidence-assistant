@@ -1,0 +1,13 @@
+logs/
+tmp/
+output/
+
+*.zip
+*.raw-sse.txt
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+~$*
+.~*
