@@ -2,11 +2,26 @@ logs/
 tmp/
 output/
 node_modules/
+.pnpm-store/
+.playwright-mcp/
+.env
+.env.*
+!.env.example
+package-lock.json
+pnpm-lock.yaml
+dist/
+dist-types/
+apps/*/dist/
+apps/*/dist-types/
+packages/*/dist/
+data/uploads/
+data/generated/
 
 *.zip
 *.raw-sse.txt
 *.tmp
 *.bak
+frontend-polish-*.png
 .DS_Store
 Thumbs.db
 

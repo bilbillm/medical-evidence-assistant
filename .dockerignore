@@ -1,0 +1,15 @@
+node_modules
+.pnpm-store
+dist
+dist-types
+apps/*/dist
+apps/*/dist-types
+packages/*/dist
+data/uploads
+data/generated
+logs
+tmp
+output
+.git
+**/~$*
+交接文档/交接文档/04_评测集
