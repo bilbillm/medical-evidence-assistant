@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Inject,
   NotFoundException,
   Param,
   Post,
@@ -18,26 +19,34 @@ import { SubmitMessageRequest } from '@medical-evidence/shared';
 import { PackageService } from './package.service.js';
 import { SessionsService } from './sessions.service.js';
 
+let sessionsServiceRef: SessionsService;
+let packageServiceRef: PackageService;
+
 @Controller('sessions')
 export class SessionsController {
   constructor(
-    private readonly sessionsService: SessionsService,
-    private readonly packageService: PackageService
-  ) {}
+    @Inject(SessionsService)
+    sessionsService: SessionsService,
+    @Inject(PackageService)
+    packageService: PackageService
+  ) {
+    sessionsServiceRef = sessionsService;
+    packageServiceRef = packageService;
+  }
 
   @Post()
   createSession() {
-    return { session: this.sessionsService.createSession() };
+    return { session: sessionsServiceRef.createSession() };
   }
 
   @Get(':sessionId')
   getSession(@Param('sessionId') sessionId: string) {
-    return { session: this.sessionsService.getSession(sessionId) };
+    return { session: sessionsServiceRef.getSession(sessionId) };
   }
 
   @Post(':sessionId/messages')
   async submitMessage(@Param('sessionId') sessionId: string, @Body() body: SubmitMessageRequest) {
-    return this.sessionsService.submitText(sessionId, body.content ?? '', body.attachmentDocumentIds ?? []);
+    return sessionsServiceRef.submitText(sessionId, body.content ?? '', body.attachmentDocumentIds ?? []);
   }
 
   @Post(':sessionId/messages/stream')
@@ -52,7 +61,7 @@ export class SessionsController {
     response.flushHeaders();
 
     try {
-      for await (const chunk of this.sessionsService.streamSubmitText(sessionId, body.content ?? '', body.attachmentDocumentIds ?? [])) {
+      for await (const chunk of sessionsServiceRef.streamSubmitText(sessionId, body.content ?? '', body.attachmentDocumentIds ?? [])) {
         response.write(chunk);
         (response as Response & { flush?: () => void }).flush?.();
       }
@@ -66,19 +75,19 @@ export class SessionsController {
 
   @Post(':sessionId/text-document')
   async submitTextDocument(@Param('sessionId') sessionId: string, @Body() body: SubmitMessageRequest) {
-    return this.sessionsService.addTextDocument(sessionId, body.content ?? '');
+    return sessionsServiceRef.addTextDocument(sessionId, body.content ?? '');
   }
 
   @Post(':sessionId/files')
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage() }))
   async uploadFile(@Param('sessionId') sessionId: string, @UploadedFile() file?: Express.Multer.File) {
-    return this.sessionsService.addUploadedFile(sessionId, file);
+    return sessionsServiceRef.addUploadedFile(sessionId, file);
   }
 
   @Post(':sessionId/files/batch')
   @UseInterceptors(FilesInterceptor('files', 8, { storage: memoryStorage() }))
   async uploadFiles(@Param('sessionId') sessionId: string, @UploadedFiles() files: Express.Multer.File[] | undefined, @Body() body: { askNext?: string }) {
-    return this.sessionsService.addUploadedFiles(sessionId, files ?? [], body.askNext !== 'false');
+    return sessionsServiceRef.addUploadedFiles(sessionId, files ?? [], body.askNext !== 'false');
   }
 
   @Get(':sessionId/files/:fileName')
@@ -87,7 +96,7 @@ export class SessionsController {
     @Param('fileName') fileName: string,
     @Res() response: Response
   ) {
-    const filePath = this.sessionsService.uploadedFilePath(sessionId, fileName);
+    const filePath = sessionsServiceRef.uploadedFilePath(sessionId, fileName);
     if (!existsSync(filePath)) {
       throw new NotFoundException('File not found');
     }
@@ -97,19 +106,19 @@ export class SessionsController {
   @Post(':sessionId/audio')
   @UseInterceptors(FileInterceptor('audio', { storage: memoryStorage() }))
   async transcribeAudio(@UploadedFile() audio?: Express.Multer.File) {
-    return { transcript: await this.sessionsService.transcribeAudio(audio) };
+    return { transcript: await sessionsServiceRef.transcribeAudio(audio) };
   }
 
   @Post(':sessionId/generate-patient-view')
   async generatePatientView(@Param('sessionId') sessionId: string) {
-    const patientView = await this.sessionsService.generatePatientView(sessionId);
-    return { session: this.sessionsService.getSession(sessionId), patientView };
+    const patientView = await sessionsServiceRef.generatePatientView(sessionId);
+    return { session: sessionsServiceRef.getSession(sessionId), patientView };
   }
 
   @Post(':sessionId/generate-doctor-package')
   async generateDoctorPackage(@Param('sessionId') sessionId: string) {
-    const doctorPackage = await this.sessionsService.generateDoctorPackage(sessionId);
-    return { session: this.sessionsService.getSession(sessionId), doctorPackage };
+    const doctorPackage = await sessionsServiceRef.generateDoctorPackage(sessionId);
+    return { session: sessionsServiceRef.getSession(sessionId), doctorPackage };
   }
 
   @Post(':sessionId/generate-doctor-package/stream')
@@ -123,7 +132,7 @@ export class SessionsController {
     response.flushHeaders();
 
     try {
-      for await (const chunk of this.sessionsService.streamDoctorPackage(sessionId)) {
+      for await (const chunk of sessionsServiceRef.streamDoctorPackage(sessionId)) {
         response.write(chunk);
         (response as Response & { flush?: () => void }).flush?.();
       }
@@ -137,12 +146,12 @@ export class SessionsController {
 
   @Post(':sessionId/packages/patient')
   async createPatientPackage(@Param('sessionId') sessionId: string) {
-    return this.packageService.createPackage(sessionId, 'patient');
+    return packageServiceRef.createPackage(sessionId, 'patient');
   }
 
   @Post(':sessionId/packages/doctor')
   async createDoctorPackage(@Param('sessionId') sessionId: string) {
-    return this.packageService.createPackage(sessionId, 'doctor');
+    return packageServiceRef.createPackage(sessionId, 'doctor');
   }
 
   @Get(':sessionId/packages/:packageType/download')
@@ -151,8 +160,8 @@ export class SessionsController {
     @Param('packageType') packageType: 'patient' | 'doctor',
     @Res() response: Response
   ) {
-    const session = this.sessionsService.getSession(sessionId);
-    const item = session.packages.find((pkg) => pkg.packageType === packageType) ?? await this.packageService.createPackage(sessionId, packageType);
-    response.download(this.packageService.packagePath(item.fileName), item.fileName);
+    const session = sessionsServiceRef.getSession(sessionId);
+    const item = session.packages.find((pkg) => pkg.packageType === packageType) ?? await packageServiceRef.createPackage(sessionId, packageType);
+    response.download(packageServiceRef.packagePath(item.fileName), item.fileName);
   }
 }

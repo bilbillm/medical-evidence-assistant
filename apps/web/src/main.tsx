@@ -52,6 +52,7 @@ function App() {
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [requestingVoice, setRequestingVoice] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [voiceError, setVoiceError] = useState('');
   const [busy, setBusy] = useState(false);
@@ -175,6 +176,9 @@ function App() {
         await nextFrame();
         await sendMessageStream(optimisticSession, submittedContent, assistantMessage.id, attachmentDocumentIds);
       }
+    } catch (error) {
+      setStreamingCard(null);
+      setSession((prev) => prev ? replaceThinkingMessages(prev, errorToMessage(error)) : prev);
     } finally {
       setBusy(false);
     }
@@ -347,7 +351,10 @@ function App() {
   }
 
   async function toggleVoice() {
-    if (!session) return;
+    if (!session) {
+      setVoiceError('当前服务还没有连接成功，请确认本地 API 已启动后再使用语音输入。');
+      return;
+    }
     setVoiceError('');
 
     if (recording) {
@@ -356,14 +363,17 @@ function App() {
       return;
     }
 
-    if (!navigator.mediaDevices?.getUserMedia || !window.AudioContext) {
+    const mediaDevices = globalThis.navigator?.mediaDevices;
+    const AudioContextCtor = window.AudioContext;
+    if (!mediaDevices?.getUserMedia || !AudioContextCtor) {
       setVoiceError('当前浏览器不支持语音录入，请直接输入文字。');
       return;
     }
 
+    setRequestingVoice(true);
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const audioContext = new AudioContext();
+      const stream = await requestMicrophoneStream(mediaDevices);
+      const audioContext = new AudioContextCtor();
       const source = audioContext.createMediaStreamSource(stream);
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       audioSamplesRef.current = [];
@@ -382,9 +392,13 @@ function App() {
       processor.connect(audioContext.destination);
       recordingActiveRef.current = true;
       setRecording(true);
-    } catch {
+    } catch (error) {
       cleanupVoiceRecorder();
-      setVoiceError('没有获取到麦克风权限，请允许浏览器使用麦克风后重试。');
+      setVoiceError(error instanceof Error && error.message === 'microphone-permission-timeout'
+        ? '浏览器暂未返回麦克风权限结果，请检查地址栏或系统麦克风权限后重试。'
+        : '没有获取到麦克风权限，请允许浏览器使用麦克风后重试。');
+    } finally {
+      setRequestingVoice(false);
     }
   }
 
@@ -520,6 +534,7 @@ function App() {
           pendingAttachments={pendingAttachments}
           onRemoveAttachment={removePendingAttachment}
           recording={recording}
+          requestingVoice={requestingVoice}
           transcribing={transcribing}
           voiceError={voiceError}
           disabled={busy || transcribing}
@@ -678,6 +693,7 @@ function Composer(props: {
   pendingAttachments: PendingAttachment[];
   onRemoveAttachment: (id: string) => void;
   recording: boolean;
+  requestingVoice: boolean;
   transcribing: boolean;
   voiceError: string;
   disabled: boolean;
@@ -686,7 +702,7 @@ function Composer(props: {
     <footer className="composer">
       <div className="composer-actions">
         <button title="上传附件" onClick={props.onOpenUpload} disabled={props.disabled}><Paperclip size={18} /></button>
-        <button title="语音输入" className={props.recording ? 'active' : ''} onClick={props.onToggleVoice} disabled={props.disabled && !props.recording}><Mic size={18} /></button>
+        <button className="end-interview" onClick={props.onEndInterview} disabled={props.disabled}>结束访谈</button>
         <div className="composer-body">
           {props.pendingAttachments.length > 0 && (
             <div className="attachment-strip">
@@ -706,15 +722,16 @@ function Composer(props: {
               }
             }}
           />
-          {(props.recording || props.transcribing || props.voiceError) && (
+          {(props.requestingVoice || props.recording || props.transcribing || props.voiceError) && (
             <div className="composer-hint">
+              {props.requestingVoice && <span className="recording-text">正在请求麦克风权限...</span>}
               {props.recording && <span className="recording-text">语音转文字正在运行</span>}
               {props.transcribing && <span className="recording-text">正在转写语音...</span>}
               {props.voiceError && <span className="voice-error">{props.voiceError}</span>}
             </div>
           )}
         </div>
-        <button className="end-interview" onClick={props.onEndInterview} disabled={props.disabled}>结束访谈</button>
+        <button title="语音输入" className={`voice ${props.recording || props.requestingVoice ? 'active' : ''}`} onClick={props.onToggleVoice} disabled={(props.disabled || props.requestingVoice) && !props.recording}><Mic size={18} /></button>
         <button className="send" onClick={props.onSend} disabled={props.disabled || (!props.input.trim() && props.pendingAttachments.length === 0)}><Send size={18} /></button>
       </div>
     </footer>
@@ -841,7 +858,7 @@ function cardText(card: ResultCardDto) {
 
 function streamingCardToCard(state: StreamingCardState): ResultCardDto {
   if (state.type === 'patient') {
-    return textToCardDraft('患者版病程梳理', ['一、患者病程理解', '二、疾病关键词解释', '三、建议问医生的问题'], state.text);
+    return textToCardDraft('患者就诊准备卡', ['一、这份资料目前说明了什么', '二、报告里需要理解的关键词', '三、建议向医生确认的问题', '四、医生可能会追问你的信息', '五、就诊前建议补充的资料'], state.text);
   }
   return textToCardDraft(
     '医生查看版资料包',
@@ -1003,8 +1020,60 @@ function updateMessageContent(session: SessionDto, messageId: string, content: s
   };
 }
 
+function replaceThinkingMessages(session: SessionDto, content: string): SessionDto {
+  let replaced = false;
+  const messages = session.messages.map((message) => {
+    if (message.role === 'assistant' && !message.content.trim()) {
+      replaced = true;
+      return { ...message, content };
+    }
+    return message;
+  });
+
+  return {
+    ...session,
+    messages: replaced ? messages : [...messages, clientMessage('assistant', content)]
+  };
+}
+
+function errorToMessage(error: unknown) {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  if (/Failed to fetch|NetworkError|Load failed/i.test(rawMessage)) {
+    return '上传失败：当前网页连接不到本地后端服务。请确认 API 服务已启动后重试。';
+  }
+  return `上传或生成失败：${rawMessage || '未知错误，请稍后重试。'}`;
+}
+
 function nextFrame() {
   return new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function requestMicrophoneStream(mediaDevices: MediaDevices) {
+  return new Promise<MediaStream>((resolve, reject) => {
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      settled = true;
+      reject(new Error('microphone-permission-timeout'));
+    }, 12000);
+
+    mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        window.clearTimeout(timer);
+        if (settled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        settled = true;
+        resolve(stream);
+      })
+      .catch((error: unknown) => {
+        window.clearTimeout(timer);
+        if (!settled) {
+          settled = true;
+          reject(error);
+        }
+      });
+  });
 }
 
 function mergeAudioSamples(chunks: Float32Array[]) {

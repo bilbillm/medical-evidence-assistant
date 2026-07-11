@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import AdmZip from 'adm-zip';
 import { existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -13,7 +13,7 @@ function timestamp() {
 
 @Injectable()
 export class PackageService {
-  constructor(private readonly sessionsService: SessionsService) {}
+  constructor(@Inject(SessionsService) private readonly sessionsService: SessionsService) {}
 
   async createPackage(sessionId: string, packageType: 'patient' | 'doctor'): Promise<PackageDownloadDto> {
     const session = this.sessionsService.requireSession(sessionId);
@@ -25,7 +25,7 @@ export class PackageService {
 
     if (packageType === 'patient') {
       const patientView = session.patientView ?? await this.sessionsService.generatePatientView(sessionId);
-      zip.addFile('患者版病程梳理.txt', Buffer.from(this.cardToText(patientView), 'utf8'));
+      zip.addFile('患者就诊准备卡.txt', Buffer.from(this.cardToText(patientView), 'utf8'));
       zip.addFile('资料清单.txt', Buffer.from(session.documents.map((item) => item.displayName).join('\n') || '暂无上传资料', 'utf8'));
       this.addOriginalAttachments(zip, sessionId);
     } else {

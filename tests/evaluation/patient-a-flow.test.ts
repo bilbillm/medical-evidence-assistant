@@ -59,29 +59,37 @@ class ContinuousFlowGateway extends MockAiGateway {
 
   override async generatePatientView() {
     return {
-      title: '患者版病程梳理',
+      title: '患者就诊准备卡',
       sections: [
         {
-          title: '一、患者病程理解',
+          title: '一、这份资料目前说明了什么',
           content: [
             '这次资料从腹部超声报告开始，报告里有一些需要医生结合更多资料判断的提示。',
             '用户补充这是体检发现，最近没有明显不舒服，以前没有做过腹部彩超，也还没有给医生看。'
           ]
         },
         {
-          title: '二、疾病关键词解释',
+          title: '二、报告里需要理解的关键词',
           content: [
             '肝内低回声：这是超声报告里描述看到的一个表现，具体代表什么需要医生结合原始影像和其他资料判断。',
             '脾大：意思是报告提示脾脏大小超出常规范围，原因需要结合病史和检查资料判断。'
           ]
         },
         {
-          title: '三、建议问医生的问题',
+          title: '三、建议向医生确认的问题',
           content: [
             '这份超声报告里的提示需要结合哪些病史、体格检查或原始影像信息判断？',
             '如果没有肝功能、乙肝或丙肝相关结果，是否需要补充相关资料，请医生结合情况判断。',
             '是否需要进一步检查或随访安排，请医生结合原始影像和临床资料判断。'
           ]
+        },
+        {
+          title: '四、医生可能会追问你的信息',
+          content: ['检查原因、症状、既往检查和医生已给出的说明。']
+        },
+        {
+          title: '五、就诊前建议补充的资料',
+          content: ['如有肝功能、乙肝或丙肝相关结果，可以就诊前一并准备。']
         }
       ]
     };
@@ -109,7 +117,7 @@ class TitleInAskGateway extends MockAiGateway {
   override async nextFollowupDecision() {
     return {
       action: 'ask' as const,
-      reply: '患者版病程梳理\n我还不能生成最终结果，还需要确认这次检查原因。\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。',
+      reply: '患者就诊准备卡\n我还不能生成最终结果，还需要确认这次检查原因。\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。',
       missingCriticalInfo: ['检查原因']
     };
   }
@@ -133,11 +141,13 @@ class GenerateActionGateway extends MockAiGateway {
   override async generatePatientView() {
     this.generatePatientViewCalled = true;
     return {
-      title: '患者版病程梳理',
+      title: '患者就诊准备卡',
       sections: [
-        { title: '一、患者病程理解', content: ['已根据用户提供资料整理病程。'] },
-        { title: '二、疾病关键词解释', content: ['这次资料里暂时没有需要单独解释的关键词。'] },
-        { title: '三、建议问医生的问题', content: ['当前资料还需要向医生确认哪些信息？'] }
+        { title: '一、这份资料目前说明了什么', content: ['已根据用户提供资料整理就诊前需要理解的信息。'] },
+        { title: '二、报告里需要理解的关键词', content: ['这次资料里暂时没有需要单独解释的关键词。'] },
+        { title: '三、建议向医生确认的问题', content: ['当前资料还需要向医生确认哪些信息？'] },
+        { title: '四、医生可能会追问你的信息', content: ['检查原因、症状和既往检查情况。'] },
+        { title: '五、就诊前建议补充的资料', content: ['如有既往检查或相关化验结果，建议一并准备。'] }
       ]
     };
   }
@@ -241,7 +251,7 @@ describe('患者 A 连续流程', () => {
     expect(result.patientView).toBeUndefined();
     expect(result.session.patientView).toBeUndefined();
     expect(result.assistantMessage?.kind ?? 'message').toBe('message');
-    expect(result.assistantMessage?.content).toContain('患者版病程梳理');
+    expect(result.assistantMessage?.content).toContain('患者就诊准备卡');
   });
 
   it('action=generate_patient_view 时调用专门患者版生成流程', async () => {
@@ -253,8 +263,8 @@ describe('患者 A 连续流程', () => {
     const finalSession = sessions.getSession(session.id);
 
     expect(gateway.generatePatientViewCalled).toBe(true);
-    expect(output).toContain('患者版病程梳理');
-    expect(finalSession.patientView?.title).toBe('患者版病程梳理');
+    expect(output).toContain('患者就诊准备卡');
+    expect(finalSession.patientView?.title).toBe('患者就诊准备卡');
   });
 
   it('用户明确结束访谈时绕过 action 判断直接生成患者版', async () => {
@@ -266,8 +276,8 @@ describe('患者 A 连续流程', () => {
     const finalSession = sessions.getSession(session.id);
 
     expect(gateway.generatePatientViewCalled).toBe(true);
-    expect(output).toContain('患者版病程梳理');
-    expect(finalSession.patientView?.title).toBe('患者版病程梳理');
+    expect(output).toContain('患者就诊准备卡');
+    expect(finalSession.patientView?.title).toBe('患者就诊准备卡');
   });
 
   it('按连续流程评测集跑完后才生成患者展示版和医生查看版资料包', async () => {
@@ -313,11 +323,13 @@ describe('患者 A 连续流程', () => {
     expectNoUnsafeMedicalAdvice(step3);
 
     const stopped = await sessions.submitText(session.id, continuousFlowInputs[3]);
-    expect(stopped.patientView?.title).toMatch(/患者版病程梳理|患者展示版/);
+    expect(stopped.patientView?.title).toMatch(/患者就诊准备卡|患者展示版/);
     expect(stopped.patientView?.sections.map((section) => section.title)).toEqual([
-      '一、患者病程理解',
-      '二、疾病关键词解释',
-      '三、建议问医生的问题'
+      '一、这份资料目前说明了什么',
+      '二、报告里需要理解的关键词',
+      '三、建议向医生确认的问题',
+      '四、医生可能会追问你的信息',
+      '五、就诊前建议补充的资料'
     ]);
     expectNoInternalFields(stopped.patientView);
     expectNoUnsafeMedicalAdvice(stopped.patientView);

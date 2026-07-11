@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
@@ -70,7 +70,9 @@ export class SessionsService {
   private readonly sessions = new Map<string, CaseSession>();
 
   constructor(
+    @Inject(PromptService)
     private readonly promptService: PromptService,
+    @Inject(MockAiGateway)
     private readonly aiGateway: MockAiGateway
   ) {
     for (const dir of [this.uploadDir(), this.generatedDir()]) {
@@ -339,8 +341,8 @@ export class SessionsService {
 
     assertSafeText(contentBuffer);
     const patientView = this.cardFromText(
-      '患者版病程梳理',
-      ['一、患者病程理解', '二、疾病关键词解释', '三、建议问医生的问题'],
+      '患者就诊准备卡',
+      ['一、这份资料目前说明了什么', '二、报告里需要理解的关键词', '三、建议向医生确认的问题', '四、医生可能会追问你的信息', '五、就诊前建议补充的资料'],
       contentBuffer
     );
     this.assertSafeCard(patientView);
