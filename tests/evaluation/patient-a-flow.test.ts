@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { MockAiGateway } from '../../apps/api/src/modules/mock-ai.gateway.js';
 import { PackageService } from '../../apps/api/src/modules/package.service.js';
-import { PromptService } from '../../apps/api/src/modules/prompt.service.js';
+import { parseQuestionBank, PromptService, selectRemainingQuestions } from '../../apps/api/src/modules/prompt.service.js';
 import { CaseSession, normalizeUploadFileName, SessionsService } from '../../apps/api/src/modules/sessions.service.js';
 
 const evaluationDir = resolve('交接文档/交接文档/04_评测集');
@@ -27,9 +27,14 @@ class CapturingGateway extends MockAiGateway {
     return 'OCR识别文字：甲状腺右叶低回声结节，TI-RADS 3类。';
   }
 
-  override async nextFollowup(session: CaseSession): Promise<string> {
+  override async nextFollowupDecision(session: CaseSession) {
     this.capturedSession = session;
-    return '这次做检查的原因是什么？\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。';
+    return {
+      action: 'ask' as const,
+      reply: '这次做检查的原因是什么？\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。',
+      missingCriticalInfo: ['检查原因'],
+      coveredQuestionIds: []
+    };
   }
 }
 
@@ -48,13 +53,19 @@ class ContinuousFlowGateway extends MockAiGateway {
     ].join('\n');
   }
 
-  override async nextFollowup(): Promise<string> {
+  override async nextFollowupDecision() {
     const replies = [
-      '这次做腹部超声主要是因为什么，是体检发现、复查，还是因为肚子不舒服去查？\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。',
-      '如果已经做过肝功能、乙肝或丙肝相关检查，可以继续提供结果；如果没有做过，也可以直接告诉我没有。\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。',
-      '目前还想确认一件事：有没有腹痛、发热、黄疸、消化不适，或者医生已经给出的说明？\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。'
+      { reply: '这次做腹部超声主要是因为什么，是体检发现、复查，还是因为肚子不舒服去查？\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。', coveredQuestionIds: [] },
+      { reply: '如果已经做过肝功能、乙肝或丙肝相关检查，可以继续提供结果；如果没有做过，也可以直接告诉我没有。\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。', coveredQuestionIds: ['hpi_main_symptoms_course', 'pmh_disease_medication'] },
+      { reply: '目前还想确认一件事：有没有腹痛、发热、黄疸、消化不适，或者医生已经给出的说明？\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。', coveredQuestionIds: [] }
     ];
-    return replies[Math.min(this.followupIndex++, replies.length - 1)];
+    const current = replies[Math.min(this.followupIndex++, replies.length - 1)];
+    return {
+      action: 'ask' as const,
+      reply: current.reply,
+      missingCriticalInfo: [],
+      coveredQuestionIds: current.coveredQuestionIds
+    };
   }
 
   override async generatePatientView() {
@@ -118,7 +129,8 @@ class TitleInAskGateway extends MockAiGateway {
     return {
       action: 'ask' as const,
       reply: '患者就诊准备卡\n我还不能生成最终结果，还需要确认这次检查原因。\n\n如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。',
-      missingCriticalInfo: ['检查原因']
+      missingCriticalInfo: ['检查原因'],
+      coveredQuestionIds: []
     };
   }
 
@@ -134,7 +146,8 @@ class GenerateActionGateway extends MockAiGateway {
     return {
       action: 'generate_patient_view' as const,
       reply: '',
-      missingCriticalInfo: []
+      missingCriticalInfo: [],
+      coveredQuestionIds: []
     };
   }
 
@@ -179,6 +192,77 @@ describe('患者 A 连续流程', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+
+  it('解析 12 个唯一的现病史、既往史问题并按优先级交错选择', () => {
+    const context = new PromptService().loadContext();
+    const basicQuestionBank = context.knowledgeFiles.find((file) => file.fileName === 'basic_question_bank.md');
+    const parsed = parseQuestionBank(basicQuestionBank?.content ?? '');
+
+    expect(parsed).toHaveLength(12);
+    expect(new Set(parsed.map((item) => item.id)).size).toBe(12);
+    expect(new Set(parsed.map((item) => item.category))).toEqual(new Set(['present_illness', 'past_history']));
+    expect(selectRemainingQuestions(parsed, [], 5)).toHaveLength(5);
+    expect(selectRemainingQuestions(parsed, [], 5).map((item) => item.category)).toContain('past_history');
+    const onlyTwoRemaining = selectRemainingQuestions(parsed, parsed.slice(0, 10).map((item) => item.id), 5);
+    expect(onlyTwoRemaining).toHaveLength(2);
+    expect(new Set(onlyTwoRemaining.map((item) => item.id)).size).toBe(2);
+  });
+
+  it('病史追问使用问题池标准问法，且最终第四栏排除已问和主动提供项', async () => {
+    class TaggedHistoryGateway extends MockAiGateway {
+      override async nextFollowupDecision() {
+        return {
+          action: 'ask' as const,
+          reply: '模型自由生成的问法不应显示。',
+          missingCriticalInfo: [],
+          selectedQuestionId: 'hpi_onset_time',
+          coveredQuestionIds: ['pmh_allergy']
+        };
+      }
+    }
+
+    const sessions = new SessionsService(new PromptService(), new TaggedHistoryGateway());
+    const session = sessions.createSession();
+    const result = await sessions.submitText(session.id, '我没有食物或药物过敏。');
+    const internalSession = sessions.requireSession(session.id);
+    const onsetQuestion = internalSession.promptContext.questionBank.find((item) => item.id === 'hpi_onset_time')?.question;
+
+    expect(result.assistantMessage?.content).toContain(onsetQuestion);
+    expect(result.assistantMessage?.content).not.toContain('模型自由生成');
+    expect(internalSession.askedQuestionIds).toEqual(['hpi_onset_time']);
+    expect(internalSession.coveredQuestionIds).toEqual(expect.arrayContaining(['hpi_onset_time', 'pmh_allergy']));
+
+    const patientView = await sessions.generatePatientView(session.id);
+    const followupQuestions = patientView.sections.find((section) => section.title === '四、医生可能会追问你的信息')?.content ?? [];
+    expect(followupQuestions).toHaveLength(5);
+    expect(followupQuestions).not.toContain(onsetQuestion);
+    expect(followupQuestions).not.toContain(internalSession.promptContext.questionBank.find((item) => item.id === 'pmh_allergy')?.question);
+    expect(followupQuestions.every((question) => internalSession.promptContext.questionBank.some((item) => item.question === question))).toBe(true);
+  });
+
+  it('结束消息中主动补充的病史也会从最终问题中排除', async () => {
+    const sessions = new SessionsService(new PromptService(), new MockAiGateway());
+    const session = sessions.createSession();
+    const result = await sessions.submitText(session.id, '我没有过敏史，也没有做过手术。先到这里。');
+    const internalSession = sessions.requireSession(session.id);
+    const followupQuestions = result.patientView?.sections.find((section) => section.title === '四、医生可能会追问你的信息')?.content ?? [];
+
+    expect(internalSession.coveredQuestionIds).toEqual(expect.arrayContaining(['pmh_allergy', 'pmh_surgery_trauma']));
+    expect(followupQuestions).not.toContain(internalSession.promptContext.questionBank.find((item) => item.id === 'pmh_allergy')?.question);
+    expect(followupQuestions).not.toContain(internalSession.promptContext.questionBank.find((item) => item.id === 'pmh_surgery_trauma')?.question);
+  });
+
+  it('全部病史问题已覆盖时显示完成提示，不重复凑数', async () => {
+    const sessions = new SessionsService(new PromptService(), new MockAiGateway());
+    const session = sessions.createSession();
+    const internalSession = sessions.requireSession(session.id);
+    internalSession.coveredQuestionIds = internalSession.promptContext.questionBank.map((item) => item.id);
+
+    const patientView = await sessions.generatePatientView(session.id);
+    expect(patientView.sections.find((section) => section.title === '四、医生可能会追问你的信息')?.content).toEqual([
+      '本轮关键病史信息已基本覆盖，医生仍可能结合现场情况继续询问。'
+    ]);
   });
 
   it('修正 multipart 上传里的中文文件名乱码', () => {
@@ -265,6 +349,9 @@ describe('患者 A 连续流程', () => {
     expect(gateway.generatePatientViewCalled).toBe(true);
     expect(output).toContain('患者就诊准备卡');
     expect(finalSession.patientView?.title).toBe('患者就诊准备卡');
+    const streamedFollowupQuestions = finalSession.patientView?.sections.find((section) => section.title === '四、医生可能会追问你的信息')?.content ?? [];
+    expect(streamedFollowupQuestions).toHaveLength(5);
+    expect(streamedFollowupQuestions.every((question) => sessions.requireSession(session.id).promptContext.questionBank.some((item) => item.question === question))).toBe(true);
   });
 
   it('用户明确结束访谈时绕过 action 判断直接生成患者版', async () => {
