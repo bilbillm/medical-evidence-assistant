@@ -6,6 +6,7 @@ import OcrClientModule, { RecognizeGeneralRequest } from '@alicloud/ocr-api20210
 import { Config } from '@alicloud/openapi-client';
 import WebSocket from 'ws';
 import { CaseSession } from './sessions.service.js';
+import { selectRemainingQuestions } from './prompt.service.js';
 
 const stopHint = '如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。';
 
@@ -30,6 +31,8 @@ export interface FollowupDecision {
   action: FollowupAction;
   reply: string;
   missingCriticalInfo: string[];
+  selectedQuestionId?: string;
+  coveredQuestionIds: string[];
 }
 
 interface DeepSeekRequestOptions {
@@ -326,17 +329,41 @@ export class MockAiGateway {
     if (this.shouldUseDeepSeek()) {
       const result = await this.callDeepSeekJson<Partial<FollowupDecision>>(
         session,
-        `${includeKnowledge ? '请基于系统提示词、首次注入的知识库、已上传资料、已补充信息、已问过的问题和最新用户消息' : '请基于系统提示词、已上传资料、已补充信息、已问过的问题和最新用户消息'}，判断下一步动作。只返回合法 JSON：{"action":"ask","reply":"...","missingCriticalInfo":["..."]} 或 {"action":"generate_patient_view","reply":"","missingCriticalInfo":[]}。普通追问阶段不得输出患者就诊准备卡正文；如果仍缺检查原因、症状和持续时间、既往相关检查、医生已给出的说明等关键资料，必须返回 action=ask，reply 只问一个最关键问题并追加固定停止提示。只有用户明确说没有要补充、结束访谈、要求生成病程分析，或关键资料已经基本齐备时，才允许 action=generate_patient_view。阶段性说明不能冒充最终患者就诊准备卡。不要生成医生查看版资料包，除非用户明确要求。如果最新用户消息只是寒暄、问你是谁、问能做什么，返回 action=ask，并在 reply 中自然回应后轻轻引导用户上传或粘贴资料。不要输出内部字段、引用文档或原文依据。`,
+        `${includeKnowledge ? '请基于系统提示词、首次注入的知识库、已上传资料、已补充信息、已问过的问题和最新用户消息' : '请基于系统提示词、已上传资料、已补充信息、已问过的问题和最新用户消息'}，判断下一步动作。只返回合法 JSON：{"action":"ask","reply":"...","missingCriticalInfo":["..."],"selectedQuestionId":"hpi_xxx 或 pmh_xxx，非病史追问时省略","coveredQuestionIds":["患者最新回复已明确覆盖的问题 ID"]} 或 {"action":"generate_patient_view","reply":"","missingCriticalInfo":[],"coveredQuestionIds":["..."]}。现病史、既往史类追问必须从 questionBank 选择一个未覆盖 ID 并返回 selectedQuestionId；报告对应的化验、影像等资料缺口追问不设 selectedQuestionId。coveredQuestionIds 只标记患者已明确说出的内容，不得猜测。普通追问阶段不得输出患者就诊准备卡正文；如果仍缺检查原因、症状和持续时间、既往相关检查、医生已给出的说明等关键资料，必须返回 action=ask，reply 只问一个最关键问题并追加固定停止提示。只有用户明确结束，或关键资料已经基本齐备时，才允许 action=generate_patient_view。如果最新用户消息只是寒暄或功能询问，自然回应后轻轻引导上传资料。不要输出内部字段、引用文档或原文依据。`,
         { includeKnowledge, temperature: 0.35 }
       );
       return this.normalizeFollowupDecision(result);
     }
 
+    const coveredQuestionIds = this.inferCoveredQuestionIds(this.latestUserText(session));
+    const selectedQuestion = selectRemainingQuestions(
+      session.promptContext.questionBank,
+      [...session.coveredQuestionIds, ...coveredQuestionIds],
+      1
+    )[0];
+
     return {
       action: 'ask',
-      reply: await this.nextFollowup(session, includeKnowledge),
-      missingCriticalInfo: []
+      reply: selectedQuestion ? `${selectedQuestion.question}\n\n${stopHint}` : await this.nextFollowup(session, includeKnowledge),
+      missingCriticalInfo: [],
+      selectedQuestionId: selectedQuestion?.id,
+      coveredQuestionIds
     };
+  }
+
+  async identifyCoveredQuestionIds(session: CaseSession, content: string): Promise<string[]> {
+    if (!content.trim()) return [];
+    if (this.shouldUseDeepSeek()) {
+      const result = await this.callDeepSeekJson<{ coveredQuestionIds?: string[] }>(
+        session,
+        `只判断患者最新这条消息明确提供了 questionBank 中哪些信息。只返回 JSON：{"coveredQuestionIds":["..."]}。不得根据报告或常识猜测。患者消息：${JSON.stringify(content)}`
+      );
+      return Array.isArray(result.coveredQuestionIds)
+        ? result.coveredQuestionIds.filter((item): item is string => typeof item === 'string')
+        : [];
+    }
+
+    return this.inferCoveredQuestionIds(content);
   }
 
   async summarizePatientFacts(session: CaseSession): Promise<FactSummaryInput[]> {
@@ -368,23 +395,30 @@ export class MockAiGateway {
     const missingCriticalInfo = Array.isArray(result.missingCriticalInfo)
       ? result.missingCriticalInfo.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
       : [];
+    const selectedQuestionId = typeof result.selectedQuestionId === 'string' ? result.selectedQuestionId.trim() : undefined;
+    const coveredQuestionIds = Array.isArray(result.coveredQuestionIds)
+      ? result.coveredQuestionIds.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+      : [];
 
     if (action === 'generate_patient_view') {
-      return { action, reply, missingCriticalInfo };
+      return { action, reply, missingCriticalInfo, coveredQuestionIds };
     }
 
     return {
       action: 'ask',
       reply: reply || `我还需要继续确认一项关键资料。\n\n${stopHint}`,
-      missingCriticalInfo
+      missingCriticalInfo,
+      selectedQuestionId,
+      coveredQuestionIds
     };
   }
 
   async generatePatientView(session: CaseSession): Promise<ResultCardDto> {
+    const remainingQuestions = this.remainingQuestionText(session);
     if (this.shouldUseDeepSeek()) {
       return this.callDeepSeekJson<ResultCardDto>(
         session,
-        '请生成患者就诊准备卡。只返回 JSON，结构必须是 {"title":"患者就诊准备卡","sections":[{"title":"一、这份资料目前说明了什么","content":["..."]},{"title":"二、报告里需要理解的关键词","content":["..."]},{"title":"三、建议向医生确认的问题","content":["..."]},{"title":"四、医生可能会追问你的信息","content":["..."]},{"title":"五、就诊前建议补充的资料","content":["..."]}]}。内容必须大白话，只整理真正的病例资料；忽略寒暄、问候、问你是谁、问软件怎么用等非病例内容。不能诊断，不能给治疗、用药、穿刺、手术、复查周期建议，不能输出内部字段、知识库引用、原文依据。'
+        `请生成患者就诊准备卡。只返回 JSON，结构必须是 {"title":"患者就诊准备卡","sections":[{"title":"一、这份资料目前说明了什么","content":["..."]},{"title":"二、报告里需要理解的关键词","content":["..."]},{"title":"三、建议向医生确认的问题","content":["..."]},{"title":"四、医生可能会追问你的信息","content":["..."]},{"title":"五、就诊前建议补充的资料","content":["..."]}]}。第四栏只能逐字使用以下未覆盖问题，不得增加或重复其他问题：${JSON.stringify(remainingQuestions)}。内容必须大白话，只整理真正的病例资料；忽略寒暄等非病例内容。不能诊断，不能给治疗、用药、穿刺、手术、复查周期建议，不能输出内部字段、知识库引用、原文依据。`
       );
     }
 
@@ -438,9 +472,10 @@ export class MockAiGateway {
 
   async *streamPatientView(session: CaseSession): AsyncGenerator<string> {
     if (this.shouldUseDeepSeek()) {
+      const remainingQuestions = this.remainingQuestionText(session);
       yield* this.streamDeepSeekText(
         session,
-        '请生成患者就诊准备卡。只输出正文，不要输出 JSON。格式必须包含标题“患者就诊准备卡”，并依次包含“一、这份资料目前说明了什么”“二、报告里需要理解的关键词”“三、建议向医生确认的问题”“四、医生可能会追问你的信息”“五、就诊前建议补充的资料”。内容必须大白话，只整理真正的病例资料；忽略寒暄、问候、问你是谁、问软件怎么用等非病例内容。不能诊断，不能给治疗、用药、穿刺、手术、复查周期建议，不能输出内部字段、知识库引用、原文依据。',
+        `请生成患者就诊准备卡。只输出正文，不要输出 JSON。格式必须包含标题“患者就诊准备卡”，并依次包含“一、这份资料目前说明了什么”“二、报告里需要理解的关键词”“三、建议向医生确认的问题”“四、医生可能会追问你的信息”“五、就诊前建议补充的资料”。第四栏只能逐字使用以下未覆盖问题：${JSON.stringify(remainingQuestions)}。内容必须大白话，只整理真正的病例资料；忽略寒暄等非病例内容。不能诊断，不能给治疗、用药、穿刺、手术、复查周期建议，不能输出内部字段、知识库引用、原文依据。`,
         false
       );
       return;
@@ -714,8 +749,41 @@ export class MockAiGateway {
         label: fact.label,
         content: fact.content
       })),
-      askedQuestions: session.askedQuestions
+      askedQuestions: session.askedQuestions,
+      questionBank: session.promptContext.questionBank,
+      askedQuestionIds: session.askedQuestionIds,
+      coveredQuestionIds: session.coveredQuestionIds,
+      remainingHistoryQuestions: this.remainingQuestionText(session)
     }, null, 2);
+  }
+
+  private remainingQuestionText(session: CaseSession) {
+    const questions = selectRemainingQuestions(session.promptContext.questionBank, session.coveredQuestionIds, 5);
+    return questions.length > 0
+      ? questions.map((item) => item.question)
+      : ['本轮关键病史信息已基本覆盖，医生仍可能结合现场情况继续询问。'];
+  }
+
+  private latestUserText(session: CaseSession) {
+    return [...session.messages].reverse().find((message) => message.role === 'user')?.content ?? '';
+  }
+
+  private inferCoveredQuestionIds(content: string) {
+    const matches: Array<[string, RegExp]> = [
+      ['hpi_onset_time', /(什么时候|开始|持续了?\d*[天周月年]|最近\d*[天周月年])/],
+      ['hpi_trigger', /(诱因|劳累|受凉|外伤后|饮食变化)/],
+      ['hpi_main_symptoms_course', /(主要症状|不舒服|加重|减轻|反复)/],
+      ['hpi_associated_symptoms', /(伴随|发热|黄疸|腹痛|乏力|消化不适)/],
+      ['hpi_treatment_course', /(就诊|医院|科室|治疗|疗效|吃了|用过.*药)/],
+      ['hpi_general_condition', /(饮食|睡眠|大小便|体重)/],
+      ['pmh_disease_medication', /(既往.*病|病史|高血压|糖尿病|长期用药)/],
+      ['pmh_surgery_trauma', /(手术|严重外伤|外伤史)/],
+      ['pmh_allergy', /(过敏)/],
+      ['pmh_infectious_disease', /(传染病史|得过.*(肝炎|结核)|没有.*(肝炎|结核))/],
+      ['pmh_transfusion', /(输血)/],
+      ['pmh_vaccination', /(预防接种|疫苗)/]
+    ];
+    return matches.filter(([, pattern]) => pattern.test(content)).map(([id]) => id);
   }
 
   private parseJsonContent<T>(content: string): T {

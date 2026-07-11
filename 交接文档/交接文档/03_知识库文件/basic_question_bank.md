@@ -2,10 +2,29 @@
 
 ## 使用原则
 
-- 每轮只问 2-4 个问题。
+- 每轮只问 1 个最关键的问题。
 - 优先问 P1 问题。
 - 问法要让患者能理解。
 - 避免一次性罗列太多医学术语。
+
+## 结构化现病史、既往史问题池
+
+> 下表是病史类追问的唯一来源。访谈阶段记录已问或患者已主动提供的 ID；最终“医生可能会追问你的信息”只从未覆盖 ID 中选择。
+
+| ID | 分类 | 优先级 | 患者可读问法 |
+| --- | --- | --- | --- |
+| hpi_onset_time | present_illness | P1 | 这次不舒服或异常最早是什么时候发现的？当时是怎么开始的？ |
+| hpi_trigger | present_illness | P2 | 发现不舒服前有没有明显诱因，比如劳累、受凉、外伤或饮食变化？ |
+| hpi_main_symptoms_course | present_illness | P1 | 主要有哪些不舒服？从开始到现在是加重、减轻，还是反复出现？ |
+| hpi_associated_symptoms | present_illness | P1 | 除了主要不舒服，还有没有发热、疼痛、乏力或其他同时出现的情况？ |
+| hpi_treatment_course | present_illness | P2 | 为这个问题去过哪些医院或科室，做过什么检查或治疗，用过什么药，效果怎么样？ |
+| hpi_general_condition | present_illness | P2 | 最近的饮食、睡眠、大小便和体重有没有明显变化？ |
+| pmh_disease_medication | past_history | P1 | 以前得过哪些比较重要或长期的疾病？现在有没有长期用药？ |
+| pmh_surgery_trauma | past_history | P2 | 以前做过手术，或受过比较严重的外伤吗？ |
+| pmh_allergy | past_history | P1 | 有没有食物或药物过敏？如果有，过敏时会出现什么情况？ |
+| pmh_infectious_disease | past_history | P3 | 以前得过肺结核、病毒性肝炎等传染性疾病吗？ |
+| pmh_transfusion | past_history | P3 | 以前有过输血经历吗？如果有，大概是什么时候、因为什么？ |
+| pmh_vaccination | past_history | P3 | 预防接种情况是否基本完整？最近有没有接种过与当前情况相关的疫苗？ |
 
 ## 诊疗经过
 
@@ -35,4 +54,3 @@
 | P2 | family_history | 家里直系亲属有没有类似疾病或相关肿瘤病史？ | 甲状腺、乳腺、消化、泌尿等 |
 | P2 | intervention_history | 之前有没有做过穿刺、手术、放化疗或介入治疗？ | 复查或异常报告 |
 | P3 | allergy_history | 是否有药物或造影剂过敏史？ | 需要进一步检查时 |
-

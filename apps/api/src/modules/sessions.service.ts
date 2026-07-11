@@ -13,7 +13,7 @@ import {
   SourceDocumentDto
 } from '@medical-evidence/shared';
 import { FollowupDecision, MockAiGateway } from './mock-ai.gateway.js';
-import { PromptContext, PromptService } from './prompt.service.js';
+import { PromptContext, PromptService, selectRemainingQuestions } from './prompt.service.js';
 import { assertSafeText } from './safety.js';
 
 export interface CaseSession {
@@ -26,6 +26,8 @@ export interface CaseSession {
   knowledgeInjected: boolean;
   messages: ChatMessageDto[];
   askedQuestions: string[];
+  askedQuestionIds: string[];
+  coveredQuestionIds: string[];
   patientView?: ResultCardDto;
   doctorPackage?: ResultCardDto;
   packages: PackageDownloadDto[];
@@ -65,6 +67,8 @@ export function isStopRequestText(content: string) {
   ].some((phrase) => normalized.includes(phrase));
 }
 
+const stopHint = '如果没有再补充的或者不想继续上传了，可以告诉我没有要补充的东西了。';
+
 @Injectable()
 export class SessionsService {
   private readonly sessions = new Map<string, CaseSession>();
@@ -98,6 +102,8 @@ export class SessionsService {
         )
       ],
       askedQuestions: [],
+      askedQuestionIds: [],
+      coveredQuestionIds: [],
       packages: []
     };
     this.sessions.set(session.id, session);
@@ -111,18 +117,14 @@ export class SessionsService {
   async submitText(sessionId: string, content: string, attachmentDocumentIds: string[] = []): Promise<{ session: SessionDto; assistantMessage?: ChatMessageDto; patientView?: ResultCardDto }> {
     const session = this.requireSession(sessionId);
     session.messages.push(message('user', content, 'message', this.messageAttachmentsFromIds(session, attachmentDocumentIds)));
+    const factRecorded = this.recordPatientFact(session, content);
 
     if (isStopRequestText(content)) {
+      this.applyCoveredQuestionIds(session, await this.aiGateway.identifyCoveredQuestionIds(session, content));
+      if (factRecorded) await this.refreshFactSummaries(session);
       const patientView = await this.generatePatientView(sessionId);
       return { session: this.toDto(session), patientView };
     }
-
-    session.facts.push({
-      id: randomUUID(),
-      label: this.inferFactLabel(session.facts.length),
-      content,
-      createdAt: now()
-    });
     await this.refreshFactSummaries(session);
 
     const assistantMessage = await this.askNextQuestion(session);
@@ -192,22 +194,19 @@ export class SessionsService {
   async *streamSubmitText(sessionId: string, content: string, attachmentDocumentIds: string[] = []): AsyncGenerator<string> {
     const session = this.requireSession(sessionId);
     session.messages.push(message('user', content, 'message', this.messageAttachmentsFromIds(session, attachmentDocumentIds)));
+    const factRecorded = this.recordPatientFact(session, content);
 
     if (isStopRequestText(content)) {
+      this.applyCoveredQuestionIds(session, await this.aiGateway.identifyCoveredQuestionIds(session, content));
       yield* this.streamPatientViewIntoSession(session);
+      if (factRecorded) await this.refreshFactSummaries(session);
       return;
     }
-
-    session.facts.push({
-      id: randomUUID(),
-      label: this.inferFactLabel(session.facts.length),
-      content,
-      createdAt: now()
-    });
 
     const includeKnowledge = !session.knowledgeInjected;
     const decision = await this.aiGateway.nextFollowupDecision(session, includeKnowledge);
     session.knowledgeInjected = true;
+    this.applyCoveredQuestionIds(session, decision.coveredQuestionIds);
 
     if (decision.action === 'generate_patient_view') {
       yield* this.streamPatientViewIntoSession(session);
@@ -215,14 +214,14 @@ export class SessionsService {
       return;
     }
 
-    const reply = this.replyFromDecision(decision);
-    assertSafeText(reply);
+    const resolved = this.replyFromDecision(session, decision);
+    assertSafeText(resolved.content);
     session.status = 'WAITING_USER_ANSWER';
-    for await (const chunk of this.streamText(reply)) {
+    for await (const chunk of this.streamText(resolved.content)) {
       yield chunk;
     }
-    session.askedQuestions.push(reply);
-    session.messages.push(message('assistant', reply));
+    this.recordAskedQuestion(session, resolved.questionId, resolved.content);
+    session.messages.push(message('assistant', resolved.content));
     await this.refreshFactSummaries(session);
   }
 
@@ -248,7 +247,7 @@ export class SessionsService {
 
   async generatePatientView(sessionId: string): Promise<ResultCardDto> {
     const session = this.requireSession(sessionId);
-    const patientView = await this.aiGateway.generatePatientView(session);
+    const patientView = this.finalizePatientView(session, await this.aiGateway.generatePatientView(session));
     this.assertSafeCard(patientView);
     session.patientView = patientView;
     session.status = 'COMPLETED';
@@ -310,21 +309,33 @@ export class SessionsService {
     const includeKnowledge = !session.knowledgeInjected;
     const decision = await this.aiGateway.nextFollowupDecision(session, includeKnowledge);
     session.knowledgeInjected = true;
+    this.applyCoveredQuestionIds(session, decision.coveredQuestionIds);
     if (decision.action === 'generate_patient_view') {
       await this.generatePatientView(session.id);
       return session.messages[session.messages.length - 1];
     }
 
-    const content = this.replyFromDecision(decision);
-    assertSafeText(content);
-    session.askedQuestions.push(content);
-    const assistantMessage = message('assistant', content);
+    const resolved = this.replyFromDecision(session, decision);
+    assertSafeText(resolved.content);
+    this.recordAskedQuestion(session, resolved.questionId, resolved.content);
+    const assistantMessage = message('assistant', resolved.content);
     session.messages.push(assistantMessage);
     return assistantMessage;
   }
 
-  private replyFromDecision(decision: FollowupDecision) {
-    return decision.reply.trim() || '我还需要继续确认一项关键资料。';
+  private replyFromDecision(session: CaseSession, decision: FollowupDecision) {
+    if (decision.selectedQuestionId) {
+      const selected = session.promptContext.questionBank.find((item) => item.id === decision.selectedQuestionId && !session.coveredQuestionIds.includes(item.id))
+        ?? selectRemainingQuestions(session.promptContext.questionBank, session.coveredQuestionIds, 1)[0];
+      if (selected) {
+        return { content: `${selected.question}\n\n${stopHint}`, questionId: selected.id };
+      }
+    }
+
+    return {
+      content: decision.reply.trim() || '我还需要继续确认一项关键资料。',
+      questionId: undefined
+    };
   }
 
   private inferFactLabel(index: number) {
@@ -340,11 +351,11 @@ export class SessionsService {
     }
 
     assertSafeText(contentBuffer);
-    const patientView = this.cardFromText(
+    const patientView = this.finalizePatientView(session, this.cardFromText(
       '患者就诊准备卡',
       ['一、这份资料目前说明了什么', '二、报告里需要理解的关键词', '三、建议向医生确认的问题', '四、医生可能会追问你的信息', '五、就诊前建议补充的资料'],
       contentBuffer
-    );
+    ));
     this.assertSafeCard(patientView);
     session.patientView = patientView;
     session.status = 'COMPLETED';
@@ -385,6 +396,53 @@ export class SessionsService {
     if (lowerName.endsWith('.txt') || mimeType?.startsWith('text/')) return 'text';
     if (mimeType?.startsWith('image/') || /\.(png|jpe?g|webp|gif|bmp)$/i.test(lowerName)) return 'image';
     return 'document';
+  }
+
+  private recordPatientFact(session: CaseSession, content: string) {
+    const cleaned = content
+      .replace(/(没有要补充的东西了|生成医生查看版资料包|生成患者展示版|生成患者版|生成病程分析|结束访谈|先到这里|没有了)/g, '')
+      .replace(/^[\s，。；;,.]+|[\s，。；;,.]+$/g, '')
+      .trim();
+    if (!cleaned) return false;
+
+    session.facts.push({
+      id: randomUUID(),
+      label: this.inferFactLabel(session.facts.length),
+      content: cleaned,
+      createdAt: now()
+    });
+    return true;
+  }
+
+  private applyCoveredQuestionIds(session: CaseSession, questionIds: string[]) {
+    const validIds = new Set(session.promptContext.questionBank.map((item) => item.id));
+    session.coveredQuestionIds = Array.from(new Set([
+      ...session.coveredQuestionIds,
+      ...questionIds.filter((id) => validIds.has(id))
+    ]));
+  }
+
+  private recordAskedQuestion(session: CaseSession, questionId: string | undefined, content: string) {
+    session.askedQuestions.push(content);
+    if (!questionId) return;
+    session.askedQuestionIds = Array.from(new Set([...session.askedQuestionIds, questionId]));
+    this.applyCoveredQuestionIds(session, [questionId]);
+  }
+
+  private remainingPatientQuestionText(session: CaseSession) {
+    const remaining = selectRemainingQuestions(session.promptContext.questionBank, session.coveredQuestionIds, 5);
+    return remaining.length > 0
+      ? remaining.map((item) => item.question)
+      : ['本轮关键病史信息已基本覆盖，医生仍可能结合现场情况继续询问。'];
+  }
+
+  private finalizePatientView(session: CaseSession, card: ResultCardDto): ResultCardDto {
+    const sections = card.sections.map((section) => ({ ...section, content: [...section.content] }));
+    const followupSection = sections.find((section) => section.title === '四、医生可能会追问你的信息');
+    if (followupSection) {
+      followupSection.content = this.remainingPatientQuestionText(session);
+    }
+    return { ...card, sections };
   }
 
   private toDto(session: CaseSession): SessionDto {
