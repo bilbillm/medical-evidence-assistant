@@ -858,12 +858,19 @@ function cardText(card: ResultCardDto) {
 
 function streamingCardToCard(state: StreamingCardState): ResultCardDto {
   if (state.type === 'patient') {
-    return textToCardDraft('患者就诊准备卡', ['一、这份资料目前说明了什么', '二、报告里需要理解的关键词', '三、建议向医生确认的问题', '四、医生可能会追问你的信息', '五、就诊前建议补充的资料'], state.text);
+    return textToCardDraft('患者就诊准备卡', ['一、报告里需要理解的关键词', '二、医生可能会追问你的信息', '三、建议向医生确认的问题', '四、就诊前建议补充的资料'], state.text);
   }
   return textToCardDraft(
     '医生查看版资料包',
-    ['资料来源', '主诉或检查原因', '病程时间线', '检查资料整理', '患者补充信息', '已有检查资料', '仍缺资料', '建议向医生确认的问题', '安全声明'],
-    state.text
+    ['资料来源', '主诉或检查原因', '病程时间线', '检查资料整理', '患者补充信息', '已有检查资料', '仍缺资料', '安全声明'],
+    stripDoctorConfirmationSection(state.text)
+  );
+}
+
+function stripDoctorConfirmationSection(text: string) {
+  return text.replace(
+    /(?:^|\n)\s*(?:#{1,6}\s*)?(?:八、)?建议向医生(?:询问|确认)的问题[\s\S]*?(?=\n\s*(?:#{1,6}\s*)?(?:八、|九、)?安全声明|$)/g,
+    '\n'
   );
 }
 

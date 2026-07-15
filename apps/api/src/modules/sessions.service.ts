@@ -235,11 +235,11 @@ export class SessionsService {
     }
 
     assertSafeText(contentBuffer);
-    const doctorPackage = this.cardFromText(
+    const doctorPackage = this.finalizeDoctorPackage(this.cardFromText(
       '医生查看版资料包',
-      ['资料来源', '主诉或检查原因', '病程时间线', '检查资料整理', '患者补充信息', '已有检查资料', '仍缺资料', '建议向医生确认的问题', '安全声明'],
+      ['资料来源', '主诉或检查原因', '病程时间线', '检查资料整理', '患者补充信息', '已有检查资料', '仍缺资料', '安全声明'],
       contentBuffer
-    );
+    ));
     this.assertSafeCard(doctorPackage);
     session.doctorPackage = doctorPackage;
     session.messages.push(message('assistant', this.cardToText(doctorPackage), 'doctor_package'));
@@ -257,7 +257,7 @@ export class SessionsService {
 
   async generateDoctorPackage(sessionId: string): Promise<ResultCardDto> {
     const session = this.requireSession(sessionId);
-    const doctorPackage = await this.aiGateway.generateDoctorPackage(session);
+    const doctorPackage = this.finalizeDoctorPackage(await this.aiGateway.generateDoctorPackage(session));
     this.assertSafeCard(doctorPackage);
     session.doctorPackage = doctorPackage;
     session.messages.push(message('assistant', this.cardToText(doctorPackage), 'doctor_package'));
@@ -353,7 +353,7 @@ export class SessionsService {
     assertSafeText(contentBuffer);
     const patientView = this.finalizePatientView(session, this.cardFromText(
       '患者就诊准备卡',
-      ['一、这份资料目前说明了什么', '二、报告里需要理解的关键词', '三、建议向医生确认的问题', '四、医生可能会追问你的信息', '五、就诊前建议补充的资料'],
+      ['一、报告里需要理解的关键词', '二、医生可能会追问你的信息', '三、建议向医生确认的问题', '四、就诊前建议补充的资料'],
       contentBuffer
     ));
     this.assertSafeCard(patientView);
@@ -437,11 +437,38 @@ export class SessionsService {
   }
 
   private finalizePatientView(session: CaseSession, card: ResultCardDto): ResultCardDto {
-    const sections = card.sections.map((section) => ({ ...section, content: [...section.content] }));
-    const followupSection = sections.find((section) => section.title === '四、医生可能会追问你的信息');
+    const allowedTitles = [
+      '一、报告里需要理解的关键词',
+      '二、医生可能会追问你的信息',
+      '三、建议向医生确认的问题',
+      '四、就诊前建议补充的资料'
+    ];
+    const sections = allowedTitles.map((title) => {
+      const section = card.sections.find((item) => item.title === title);
+      return { title, content: section ? [...section.content] : ['暂无明确资料。'] };
+    });
+    const followupSection = sections.find((section) => section.title === '二、医生可能会追问你的信息');
     if (followupSection) {
       followupSection.content = this.remainingPatientQuestionText(session);
     }
+    return { ...card, sections };
+  }
+
+  private finalizeDoctorPackage(card: ResultCardDto): ResultCardDto {
+    const allowedTitles = [
+      '资料来源',
+      '主诉或检查原因',
+      '病程时间线',
+      '检查资料整理',
+      '患者补充信息',
+      '已有检查资料',
+      '仍缺资料',
+      '安全声明'
+    ];
+    const sections = allowedTitles.map((title) => {
+      const section = card.sections.find((item) => item.title === title);
+      return { title, content: section ? [...section.content] : ['暂无明确资料。'] };
+    });
     return { ...card, sections };
   }
 

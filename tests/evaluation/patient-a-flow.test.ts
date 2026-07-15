@@ -73,18 +73,15 @@ class ContinuousFlowGateway extends MockAiGateway {
       title: '患者就诊准备卡',
       sections: [
         {
-          title: '一、这份资料目前说明了什么',
-          content: [
-            '这次资料从腹部超声报告开始，报告里有一些需要医生结合更多资料判断的提示。',
-            '用户补充这是体检发现，最近没有明显不舒服，以前没有做过腹部彩超，也还没有给医生看。'
-          ]
-        },
-        {
-          title: '二、报告里需要理解的关键词',
+          title: '一、报告里需要理解的关键词',
           content: [
             '肝内低回声：这是超声报告里描述看到的一个表现，具体代表什么需要医生结合原始影像和其他资料判断。',
             '脾大：意思是报告提示脾脏大小超出常规范围，原因需要结合病史和检查资料判断。'
           ]
+        },
+        {
+          title: '二、医生可能会追问你的信息',
+          content: ['检查原因、症状、既往检查和医生已给出的说明。']
         },
         {
           title: '三、建议向医生确认的问题',
@@ -95,11 +92,7 @@ class ContinuousFlowGateway extends MockAiGateway {
           ]
         },
         {
-          title: '四、医生可能会追问你的信息',
-          content: ['检查原因、症状、既往检查和医生已给出的说明。']
-        },
-        {
-          title: '五、就诊前建议补充的资料',
+          title: '四、就诊前建议补充的资料',
           content: ['如有肝功能、乙肝或丙肝相关结果，可以就诊前一并准备。']
         }
       ]
@@ -117,7 +110,7 @@ class ContinuousFlowGateway extends MockAiGateway {
         { title: '患者补充信息', content: ['以前没有做过腹部彩超，没有肝胆相关病史，还没有给医生看。'] },
         { title: '已有检查资料', content: ['已提供腹部超声报告图片；未提供肝功能、乙肝或丙肝相关检查结果。'] },
         { title: '仍缺资料', content: ['肝功能、乙肝或丙肝相关结果如已做过可补充；医生已给出的说明尚未提供。'] },
-        { title: '建议向医生确认的问题', content: ['当前报告中的异常提示需要结合哪些病史、体格检查或原始影像信息判断？', '是否需要进一步检查或随访安排，请医生结合原始影像和临床资料判断。'] },
+        { title: '建议向医生确认的问题', content: ['这是模型误生成的多余栏目，最终医生版必须删除。'] },
         { title: '安全声明', content: ['以上为资料整理，不替代医生诊断和治疗。'] }
       ]
     };
@@ -156,11 +149,11 @@ class GenerateActionGateway extends MockAiGateway {
     return {
       title: '患者就诊准备卡',
       sections: [
-        { title: '一、这份资料目前说明了什么', content: ['已根据用户提供资料整理就诊前需要理解的信息。'] },
-        { title: '二、报告里需要理解的关键词', content: ['这次资料里暂时没有需要单独解释的关键词。'] },
+        { title: '一、这份资料目前说明了什么', content: ['这是模型误生成的旧栏目，最终患者版必须删除。'] },
+        { title: '一、报告里需要理解的关键词', content: ['这次资料里暂时没有需要单独解释的关键词。'] },
+        { title: '二、医生可能会追问你的信息', content: ['检查原因、症状和既往检查情况。'] },
         { title: '三、建议向医生确认的问题', content: ['当前资料还需要向医生确认哪些信息？'] },
-        { title: '四、医生可能会追问你的信息', content: ['检查原因、症状和既往检查情况。'] },
-        { title: '五、就诊前建议补充的资料', content: ['如有既往检查或相关化验结果，建议一并准备。'] }
+        { title: '四、就诊前建议补充的资料', content: ['如有既往检查或相关化验结果，建议一并准备。'] }
       ]
     };
   }
@@ -234,7 +227,7 @@ describe('患者 A 连续流程', () => {
     expect(internalSession.coveredQuestionIds).toEqual(expect.arrayContaining(['hpi_onset_time', 'pmh_allergy']));
 
     const patientView = await sessions.generatePatientView(session.id);
-    const followupQuestions = patientView.sections.find((section) => section.title === '四、医生可能会追问你的信息')?.content ?? [];
+    const followupQuestions = patientView.sections.find((section) => section.title === '二、医生可能会追问你的信息')?.content ?? [];
     expect(followupQuestions).toHaveLength(5);
     expect(followupQuestions).not.toContain(onsetQuestion);
     expect(followupQuestions).not.toContain(internalSession.promptContext.questionBank.find((item) => item.id === 'pmh_allergy')?.question);
@@ -246,7 +239,7 @@ describe('患者 A 连续流程', () => {
     const session = sessions.createSession();
     const result = await sessions.submitText(session.id, '我没有过敏史，也没有做过手术。先到这里。');
     const internalSession = sessions.requireSession(session.id);
-    const followupQuestions = result.patientView?.sections.find((section) => section.title === '四、医生可能会追问你的信息')?.content ?? [];
+    const followupQuestions = result.patientView?.sections.find((section) => section.title === '二、医生可能会追问你的信息')?.content ?? [];
 
     expect(internalSession.coveredQuestionIds).toEqual(expect.arrayContaining(['pmh_allergy', 'pmh_surgery_trauma']));
     expect(followupQuestions).not.toContain(internalSession.promptContext.questionBank.find((item) => item.id === 'pmh_allergy')?.question);
@@ -260,7 +253,7 @@ describe('患者 A 连续流程', () => {
     internalSession.coveredQuestionIds = internalSession.promptContext.questionBank.map((item) => item.id);
 
     const patientView = await sessions.generatePatientView(session.id);
-    expect(patientView.sections.find((section) => section.title === '四、医生可能会追问你的信息')?.content).toEqual([
+    expect(patientView.sections.find((section) => section.title === '二、医生可能会追问你的信息')?.content).toEqual([
       '本轮关键病史信息已基本覆盖，医生仍可能结合现场情况继续询问。'
     ]);
   });
@@ -349,7 +342,7 @@ describe('患者 A 连续流程', () => {
     expect(gateway.generatePatientViewCalled).toBe(true);
     expect(output).toContain('患者就诊准备卡');
     expect(finalSession.patientView?.title).toBe('患者就诊准备卡');
-    const streamedFollowupQuestions = finalSession.patientView?.sections.find((section) => section.title === '四、医生可能会追问你的信息')?.content ?? [];
+    const streamedFollowupQuestions = finalSession.patientView?.sections.find((section) => section.title === '二、医生可能会追问你的信息')?.content ?? [];
     expect(streamedFollowupQuestions).toHaveLength(5);
     expect(streamedFollowupQuestions.every((question) => sessions.requireSession(session.id).promptContext.questionBank.some((item) => item.question === question))).toBe(true);
   });
@@ -412,12 +405,12 @@ describe('患者 A 连续流程', () => {
     const stopped = await sessions.submitText(session.id, continuousFlowInputs[3]);
     expect(stopped.patientView?.title).toMatch(/患者就诊准备卡|患者展示版/);
     expect(stopped.patientView?.sections.map((section) => section.title)).toEqual([
-      '一、这份资料目前说明了什么',
-      '二、报告里需要理解的关键词',
+      '一、报告里需要理解的关键词',
+      '二、医生可能会追问你的信息',
       '三、建议向医生确认的问题',
-      '四、医生可能会追问你的信息',
-      '五、就诊前建议补充的资料'
+      '四、就诊前建议补充的资料'
     ]);
+    expect(JSON.stringify(stopped.patientView)).not.toContain('这份资料目前说明了什么');
     expectNoInternalFields(stopped.patientView);
     expectNoUnsafeMedicalAdvice(stopped.patientView);
 
@@ -431,9 +424,9 @@ describe('患者 A 连续流程', () => {
       '患者补充信息',
       '已有检查资料',
       '仍缺资料',
-      '建议向医生确认的问题',
       '安全声明'
     ]);
+    expect(JSON.stringify(doctorPackage)).not.toContain('建议向医生确认的问题');
     expectNoInternalFields(doctorPackage);
     expectNoUnsafeMedicalAdvice(doctorPackage);
 
@@ -442,6 +435,11 @@ describe('患者 A 连续流程', () => {
     expect(patientZip.fileName).toContain('患者资料包');
     expect(doctorZip.fileName).toContain('医生资料包');
     expect(new AdmZip(packages.packagePath(patientZip.fileName)).getEntries().some((entry) => entry.entryName.startsWith('原始附件/'))).toBe(true);
+    const doctorPackageText = new AdmZip(packages.packagePath(doctorZip.fileName))
+      .getEntry('医生查看版资料包.txt')
+      ?.getData()
+      .toString('utf8') ?? '';
+    expect(doctorPackageText).not.toContain('建议向医生确认的问题');
 
     const finalSession = sessions.getSession(session.id);
     expect(finalSession.packages).toHaveLength(2);

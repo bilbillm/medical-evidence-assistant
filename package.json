@@ -13,6 +13,7 @@
     "dev:web": "npm run dev -w apps/web",
     "build": "npm run build -w packages/shared && npm run build -w apps/api && npm run build -w apps/web",
     "test": "vitest run",
+    "test:e2e:real": "node tests/evaluation/real-provider-flow.mjs",
     "start:demo": "powershell -ExecutionPolicy Bypass -File scripts/start-demo.ps1",
     "stop:demo": "powershell -ExecutionPolicy Bypass -File scripts/stop-demo.ps1"
   },
