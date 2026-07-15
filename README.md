@@ -1,129 +1,165 @@
-# 医检资料整理助手 MVP
+# 医检证据助手
 
-这是基于 PRD 和 Design 搭建的自研 Web AI chat MVP 骨架。
+[English](./README.en.md) | 简体中文
 
-## 当前能力
+面向患者及陪诊者的医疗检查资料整理智能体。用户可以上传检查报告图片、粘贴报告文字或用语音补充病史；系统通过 OCR、知识库约束和大语言模型多轮访谈补齐关键信息，最终生成患者就诊准备卡、医生查看版资料包及可下载的 ZIP 文件。
 
-- 前端 AI chat 页面：欢迎语、三个引导按钮、底部输入区、上传入口、真实浏览器录音入口、右侧资料面板。
-- 后端 API 骨架：会话、消息、文件上传、音频上传转写、患者版生成、医生版生成、ZIP 资料包生成。
-- Prompt + 知识库注入：新建会话时读取系统提示词和 `03_知识库文件`。
-- 多轮访谈骨架：每轮只追问一条，并追加停止提示。
-- 结果卡片：患者版病程梳理、医生查看版资料包。
-- ZIP 下载骨架：患者资料包 ZIP、医生资料包 ZIP。
-- 患者 A 连续流程测试。
+> 本项目用于资料整理和就诊沟通辅助，不提供疾病诊断、良恶性判断、用药、手术、穿刺或复查周期建议，也不替代医生的专业判断。
 
-## 本地验证
+## 项目亮点
+
+- **聊天式资料收集**：围绕同一病例持续对话，每轮只追问一项最关键的信息，避免传统长表单带来的填写负担。
+- **多模态输入**：支持检查报告图片 OCR、报告文字粘贴和浏览器录音转写；转写结果先由用户确认，再进入病例上下文。
+- **知识库驱动追问**：结合基础问题池、检查部位规则和资料缺口规则，优先收集对就诊沟通有价值的信息。
+- **结构化流程控制**：模型返回 `ask` 或 `generate_patient_view` 动作，由后端控制最终卡片生成，防止普通回复误触发结果页。
+- **双版本结果交付**：生成通俗的患者就诊准备卡和便于医生扫读的八栏结构化资料包，并支持复制与 ZIP 下载。
+- **医疗安全前置**：通过系统提示词、栏目白名单、后端审查和自动化测试共同限制越界表达；模型推理文本和内部规则不会展示给用户。
+
+## 使用流程
+
+```mermaid
+flowchart LR
+    A[上传报告图片或输入文字] --> B[OCR 与资料来源记录]
+    B --> C[知识库约束的多轮追问]
+    C --> D{资料是否基本齐备或用户结束访谈}
+    D -->|否| C
+    D -->|是| E[患者就诊准备卡]
+    E --> F[医生查看版资料包]
+    E --> G[患者 ZIP]
+    F --> H[医生 ZIP]
+```
+
+患者就诊准备卡固定包含：
+
+1. 报告里需要理解的关键词
+2. 医生可能会追问的信息
+3. 建议向医生确认的问题
+4. 就诊前建议补充的资料
+
+医生查看版资料包固定包含资料来源、主诉或检查原因、病程时间线、检查资料整理、患者补充信息、已有检查资料、仍缺资料和安全声明。
+
+## 系统架构
+
+```mermaid
+flowchart TB
+    U[React Web 对话界面] -->|REST / SSE| A[NestJS API]
+    A --> O[OCR 适配器<br/>Mock / 阿里云 OCR]
+    A --> S[语音适配器<br/>Mock / 讯飞 / OpenAI-compatible]
+    A --> L[LLM 适配器<br/>Mock / DeepSeek]
+    A --> P[系统提示词与医学知识库]
+    A --> C[会话编排、问题池与安全审查]
+    C --> Z[患者与医生 ZIP 资料包]
+    A -. 当前为内存会话 .-> D[(PostgreSQL 16<br/>持久化预留)]
+```
+
+项目采用 npm workspaces Monorepo：
+
+| 目录 | 职责 |
+| --- | --- |
+| `apps/web` | React 19 + Vite 单页对话界面、附件上传、录音、流式结果卡片与下载交互 |
+| `apps/api` | NestJS 11 API、会话编排、OCR/语音/LLM 适配、医疗安全审查与 ZIP 生成 |
+| `packages/shared` | 前后端共享的数据结构与接口类型 |
+| `交接文档/交接文档/03_知识库文件` | 问题池、检查部位规则、资料缺口规则与输出模板 |
+| `tests/evaluation` | 稳定回归测试和真实供应商连续链路测试 |
+| `scripts` | Docker 演示环境启动与停止脚本 |
+
+## 技术栈
+
+- 前端：React 19、TypeScript、Vite 6、Lucide React
+- 后端：Node.js、NestJS 11、Server-Sent Events
+- AI 服务：DeepSeek OpenAI-compatible API、阿里云 OCR、讯飞语音转写
+- 数据与文件：内存会话、Docker Volume、PostgreSQL 16（持久化预留）
+- 测试与部署：Vitest、Docker Compose、Nginx
+
+## 快速开始
+
+### 本地开发
+
+环境要求：Node.js 20+、npm 10+。
 
 ```powershell
+Copy-Item .env.example .env
 npm install --include-workspace-root
 npm run build
 npm test
 ```
 
-分别启动开发服务：
+默认配置使用确定性的 Mock AI 服务，无需第三方密钥即可体验完整流程。分别启动前后端：
 
 ```powershell
+# 终端 1
 npm run dev:api
+
+# 终端 2
 npm run dev:web
 ```
 
-访问：
+访问 [http://localhost:3000](http://localhost:3000)。API 默认运行在 `http://localhost:3001`。
 
-```text
-http://localhost:3000
-```
+### Docker 演示环境
 
-## Docker 启动
-
-先确保 Docker Desktop 已启动，然后运行：
+安装并启动 Docker Desktop 后运行：
 
 ```powershell
+Copy-Item .env.example .env
 npm run start:demo
 ```
 
-启动脚本会关闭 BuildKit 后再构建，避免部分 Windows / Docker Desktop 环境出现 BuildKit session header 错误。
-
-停止：
+停止服务：
 
 ```powershell
 npm run stop:demo
 ```
 
-Docker Compose 会启动：
+Docker Compose 会启动 Web、API 和 PostgreSQL 三个服务，并使用 Volume 保存上传附件和生成文件。
 
-- `web`：React 前端，端口 `3000`。
-- `api`：NestJS API，端口 `3001`。
-- `db`：PostgreSQL。
+## 接入真实 AI 服务
 
-## AI 接入说明
+所有密钥只通过本地 `.env` 或部署环境变量注入，不应提交到 Git。主要配置项如下：
 
-当前 AI Gateway 是 deterministic mock，用于先打通产品闭环。后续接真实模型时，主要替换：
-
-```text
-apps/api/src/modules/mock-ai.gateway.ts
-```
-
-DeepSeek 已接入追问、患者版和医生版生成。`.env` 配置：
-
-```text
+```dotenv
 LLM_PROVIDER=deepseek
 LLM_BASE_URL=https://api.deepseek.com
-LLM_API_KEY=你的 DeepSeek API Key
-LLM_MODEL=deepseek-v4-pro
-LLM_THINKING_ENABLED=true
-LLM_REASONING_EFFORT=high
+LLM_API_KEY=your-key
+LLM_MODEL=your-model
+
+VISION_PROVIDER=aliyun_ocr
+ALIYUN_ACCESS_KEY_ID=your-access-key-id
+ALIYUN_ACCESS_KEY_SECRET=your-access-key-secret
+
+SPEECH_PROVIDER=iflytek
+IFLYTEK_APP_ID=your-app-id
+IFLYTEK_API_KEY=your-api-key
+IFLYTEK_API_SECRET=your-api-secret
 ```
 
-开启 DeepSeek 深度思考后，后端只会把最终回答流式传给前端；DeepSeek 返回的 `reasoning_content` 不会写入会话消息，也不会显示在聊天界面。
+也可以通过 `openai_compatible` 语音适配器连接其他转写服务。完整配置项见 [`.env.example`](./.env.example)。
 
-配置后重启：
+## 测试与验证
 
 ```powershell
-npm run start:demo
+npm run build
+npm test
 ```
 
-阿里云通用文字识别已接入图片 OCR。`.env` 配置：
+当前稳定测试包含 11 个用例，覆盖问题池解析、单问题追问、已问/已提供信息差集、中文文件名上传、OCR 上下文、推理文本隔离、结构化 Action 控制、患者卡与医生包生成、医疗安全边界及 ZIP 打包。
 
-```text
-VISION_PROVIDER=aliyun_ocr
-ALIYUN_ACCESS_KEY_ID=你的 AccessKey ID
-ALIYUN_ACCESS_KEY_SECRET=你的 AccessKey Secret
-ALIYUN_OCR_ENDPOINT=ocr-api.cn-hangzhou.aliyuncs.com
+仓库还提供真实供应商链路脚本：
+
+```powershell
+npm run test:e2e:real
 ```
 
-当前 OCR 只用于报告图片文字提取；PDF 仍需要转成图片或粘贴报告文字。
+该脚本会使用配置好的 OCR 与大语言模型服务，执行“上传脱敏测试图片 → 连续多轮补充 → 生成患者卡 → 生成医生包 → 下载两个 ZIP”的完整流程。运行前请配置真实服务凭据。
 
-语音转文字已经接好浏览器录音和后端音频上传。默认 `.env` 使用：
+## 安全与隐私边界
 
-```text
-SPEECH_PROVIDER=mock
-```
+- 上传前应删除姓名、手机号、身份证号、门诊号、住院号、检查号和详细住址等个人信息。
+- 系统只读取检查报告上的文字，不对 B 超、CT、X 光或 MRI 原始影像作诊断。
+- 不展示模型思考过程、知识库文件名、命中规则、内部分类或 Evidence Graph。
+- 不给出确诊、良恶性、用药、手术、穿刺和具体复查周期结论。
+- 医疗决策始终应由医生结合病史、体格检查、原始影像和必要检查综合判断。
 
-要接真实 Speech-to-Text，把 `.env` 改为：
+## 当前阶段
 
-```text
-SPEECH_PROVIDER=openai_compatible
-SPEECH_BASE_URL=https://your-provider.example/v1
-SPEECH_API_KEY=你的密钥
-SPEECH_MODEL=你的语音转写模型
-```
-
-如果使用讯飞中英识别大模型：
-
-```text
-SPEECH_PROVIDER=iflytek
-IFLYTEK_APP_ID=你的 APPID
-IFLYTEK_API_KEY=你的 APIKey
-IFLYTEK_API_SECRET=你的 APISecret
-IFLYTEK_IAT_HOST=iat.xf-yun.com
-IFLYTEK_IAT_PATH=/v1
-```
-
-前端流程是：点击麦克风开始录音，再点一次停止；后端转写完成后，文字进入输入框，由用户确认或修改后再发送。
-
-需要保留的边界：
-
-- 前端不直接调用模型。
-- 系统提示词和知识库由后端注入。
-- 最终输出必须经过安全审查。
-- 不展示内部标签、知识库命中、引用文档、Evidence Graph 或原文依据。
+本项目处于可演示 MVP 阶段。完整对话闭环、结果卡、资料包和真实服务适配已经实现；当前会话状态仍保存在 API 进程内存中，PostgreSQL 仅作为后续持久化预留。账号体系、长期病历库、PDF 逐页 OCR、自动脱敏和医院 HIS/LIS/PACS 对接不在当前版本范围内。
